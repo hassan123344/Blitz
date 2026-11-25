@@ -1,0 +1,2342 @@
+--!strict
+local Players = game:GetService("Players")
+local PathfindingService = game:GetService("PathfindingService")
+local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
+local player = Players.LocalPlayer
+
+-- ==========================================
+-- 1. CONFIGURATION & TUNING
+-- ==========================================
+local CONFIG = {
+	SpeedValue = 20,
+	GroupClusterRadius = 22,     -- Enemies within this radius count as bunched into one group
+	PersonalRepelRadius = 8.0,   -- Step back if an enemy gets closer than this
+	EngageDistanceStuds = 12.0,  -- Preferred fighting/circling radius
+	CastRangeStuds = 18,         -- Default cast/attack range
+	CastLeewayStuds = 5.0,       -- Extra range tolerance while casting
+	WallPaddingClearance = 2.0,  -- Raycast/wall clearance buffer
+	TelegraphBufferRange = 120,  -- Max scan radius for telegraphs/hazards
+	AbilityCooldown = 0.85,      -- Seconds between E/Q cast cycles
+	AimHoldDuration = 0.25,      -- Seconds to face target when casting
+	RepathInterval = 0.16,       -- Fast path refresh when room clears or mobs move
+	WaypointReachDist = 4.5,     -- Distance to advance to next path waypoint
+	StuckCheckInterval = 0.70,   -- Seconds before checking if movement stalled
+	StuckMinMoveDist = 1.8,      -- Minimum studs moved in StuckCheckInterval
+	GroupVisitTimeout = 4.5,     -- Max seconds spent approaching a single unvisited group
+
+	-- Hazard Dodge & Progression
+	HazardScanInterval = 0.08,   -- Fast scan for colored/translucent hazard parts & hazard models
+	HazardPaddingStuds = 5.5,    -- Extra buffer outside a detected hazard
+	HazardDodgeCooldown = 0.16,  -- Fast dodge reaction
+	AutoRoomAdvance = true,      -- Move toward next room/objective/portal when room is cleared
+
+	ResetBelowY = -40,
+	HighlightTelegraphs = true,
+	RenderPathNodes = true,
+	RenderPlayerHitbox = true,
+	StreamerMode = false,
+	PickTelegraphs = false,
+	DebugVerbose = false,
+	VisualFolderName = "_DungeonAssistantVisuals",
+}
+
+-- Specific hazard model names (lowercased for matching)
+local KNOWN_HAZARD_MODELS: { [string]: boolean } = {
+	["secondbossfailedexplosion"] = true,
+	["flameeffect"] = true,
+	["corruptcannonbarragearea"] = true,
+	["beampart"] = true,
+	["dracanimagehitbox"] = true,
+	["dracanicfamiliarhitbox"] = true,
+	["dracaniwarriorhitbox"] = true,
+	["dracaniknightcircle"] = true,
+	["aggressivefreezepart"] = true,
+	["aggressivelavawalkerhit"] = true,
+	["aoeswipe"] = true,
+	["artillerymobshot"] = true,
+	["artilleryrock"] = true,
+	["azrallikpunch"] = true,
+	["azrallikpunchspread"] = true,
+	["battlemageorb"] = true,
+	["bellyflophit"] = true,
+	["biggolemrock"] = true,
+	["bigmagebeam"] = true,
+	["bigrock"] = true,
+	["bonusbossbouncingorb"] = true,
+	["bonusbossbouncingorbbad"] = true,
+	["bonusbossflameprecast"] = true,
+	["bonusbossfreezingorbbeam"] = true,
+	["bonusbossgroundflame"] = true,
+	["bonusbosslongline"] = true,
+	["bonusbosssmallspiralflame"] = true,
+	["bonusbosssweepingflames"] = true,
+	["bookclone"] = true,
+	["bosshunterinnerflameshot"] = true,
+	["bosshuntermiddlefire"] = true,
+	["bosshuntersidefire1"] = true,
+	["bosshuntersidefire2"] = true,
+	["bossmagebigsideshot"] = true,
+	["bossmagemainlaser"] = true,
+	["bossmagesideshot"] = true,
+	["bossmelee"] = true,
+	["bossrifleprecast"] = true,
+	["bossrifleshot"] = true,
+	["bossshot"] = true,
+	["canalsnpcmageshot"] = true,
+	["cannonbarragecannonhit"] = true,
+	["cannonbarragehit"] = true,
+	["cannoncrabshot"] = true,
+	["chickenmage"] = true,
+	["chickenmelee"] = true,
+	["circlehit"] = true,
+	["cool placeholething?"] = true,
+	["corruptlinefire"] = true,
+	["corruptmolotov"] = true,
+	["crossshot"] = true,
+	["crossshuriken"] = true,
+	["doubleflamebeam"] = true,
+	["droneshot"] = true,
+	["eastersecondbossrandomline"] = true,
+	["electrictowerhit"] = true,
+	["eliteswordsmanspin"] = true,
+	["enchantedfirstbossfolloworb"] = true,
+	["explosivebomb"] = true,
+	["explosivemobshot1"] = true,
+	["explosivemobshot2"] = true,
+	["explosivemobshot3"] = true,
+	["finalbossarrowshothitbox"] = true,
+	["finalbossexplosion"] = true,
+	["finalbosslineblast"] = true,
+	["finalbossorbshot"] = true,
+	["finalbossrotatingcircle"] = true,
+	["fingerblasthit"] = true,
+	["firstbossbeampart"] = true,
+	["firstbossbeamshot"] = true,
+	["firstbossbeamtrackerline"] = true,
+	["firstbossbigspike"] = true,
+	["firstbossblindingblastbeam"] = true,
+	["firstbossbombexplosion"] = true,
+	["firstbosscrisscross"] = true,
+	["firstbosscrystal"] = true,
+	["firstbosscrystaldrop"] = true,
+	["firstbossflameshot"] = true,
+	["firstbossfolloworb"] = true,
+	["firstbossgatlinggunshot"] = true,
+	["firstbossiceradius"] = true,
+	["firstbossjumpslam"] = true,
+	["firstbosslaserprecast"] = true,
+	["firstbosslefthandshot"] = true,
+	["firstbosslongline"] = true,
+	["firstbossminionexplosion"] = true,
+	["firstbossmoveorb"] = true,
+	["firstbossmovingorb"] = true,
+	["firstbossorbprecastline"] = true,
+	["firstbosspassivecriclehitbox"] = true,
+	["firstbossrighthandshot"] = true,
+	["firstbossrocket"] = true,
+	["firstbossrockethitbox"] = true,
+	["firstbossseekingspikes"] = true,
+	["firstbosssiegeshot"] = true,
+	["firstbossskyshot"] = true,
+	["firstbossspinningrock"] = true,
+	["firstbosssupplyoverhead"] = true,
+	["firstbossturretshot"] = true,
+	["firstbossupshot"] = true,
+	["flamebeam"] = true,
+	["flamelashpart"] = true,
+	["flamelashprecast"] = true,
+	["flameshurikenhit"] = true,
+	["flamingshuriken"] = true,
+	["gank"] = true,
+	["gasball"] = true,
+	["ghastlyriflemanshot"] = true,
+	["golemrock"] = true,
+	["golemrockclap"] = true,
+	["golemrocksmall"] = true,
+	["golemrockthrow"] = true,
+	["golemrockthrowsmall"] = true,
+	["hammerbothit"] = true,
+	["hitindicatoriceaoe"] = true,
+	["hitmanstrike"] = true,
+	["horizontalbeam"] = true,
+	["iceaoe"] = true,
+	["icebeam"] = true,
+	["icebeamindicator"] = true,
+	["icebomb"] = true,
+	["initialhunterbossentry"] = true,
+	["initialkingbossentry"] = true,
+	["initialmagebossentry"] = true,
+	["kinglandingarea"] = true,
+	["kolvumarspit"] = true,
+	["kolvumartrail"] = true,
+	["kraken tentacle"] = true,
+	["krakenhitbox"] = true,
+	["krakeninkhit"] = true,
+	["largeicespikes"] = true,
+	["laserbeam"] = true,
+	["magebossstrraightshot"] = true,
+	["magehorizontalbeam"] = true,
+	["mageprojectileball"] = true,
+	["mediumicespikes"] = true,
+	["minionexplosion"] = true,
+	["minionexplosionhitbox"] = true,
+	["northernaggressivefreezepart"] = true,
+	["npcmageshot"] = true,
+	["npcmagespikes"] = true,
+	["npcshurikenthrow"] = true,
+	["overgrowthlonglinespikes"] = true,
+	["overgrowthspikes"] = true,
+	["pinkfreezepart"] = true,
+	["poisonbomb"] = true,
+	["poisoncircle"] = true,
+	["precast"] = true,
+	["redfreezepart"] = true,
+	["riflemanshot"] = true,
+	["rock"] = true,
+	["rockexplosion"] = true,
+	["rockexplosionsmall"] = true,
+	["rockshatter"] = true,
+	["secondbossbigcircle"] = true,
+	["secondbossbigrockdebris"] = true,
+	["secondbosscheckeredline"] = true,
+	["secondbosscirclehit"] = true,
+	["secondbosscrescent"] = true,
+	["secondbosscriclehitbox"] = true,
+	["secondbosscrossbeam"] = true,
+	["secondbossgeyser"] = true,
+	["secondbossgeysershot"] = true,
+	["secondbossgreenorb"] = true,
+	["secondbossgroundaura"] = true,
+	["secondbossgroundslamcircle"] = true,
+	["secondbosshorizontalline"] = true,
+	["secondbosslines"] = true,
+	["secondbosslonglinepassive"] = true,
+	["secondbosslonglingeringline"] = true,
+	["secondbossorb"] = true,
+	["secondbossoverheadrock"] = true,
+	["secondbosspassivecircle"] = true,
+	["secondbosspulsewave"] = true,
+	["secondbossrandomline"] = true,
+	["secondbossrandompulse"] = true,
+	["secondbossredorb"] = true,
+	["secondbossrock"] = true,
+	["secondbossrockfall"] = true,
+	["secondbossrockhit"] = true,
+	["secondbossspinninglaser"] = true,
+	["secondbossverticalline"] = true,
+	["secondbosswave"] = true,
+	["secondbossyelloworb"] = true,
+	["serpentfirehitbox"] = true,
+	["serpentplayershot"] = true,
+	["serpentwaterhitbox"] = true,
+	["sharkthrowclient"] = true,
+	["sharkthrowhitbox"] = true,
+	["shootershot"] = true,
+	["shurikenthrow"] = true,
+	["silkblast"] = true,
+	["smallicespikes"] = true,
+	["spearmanfreezepart"] = true,
+	["spearmanhitbox"] = true,
+	["spearmanstrike"] = true,
+	["spikeprecast"] = true,
+	["spinbotspin"] = true,
+	["spiritorb"] = true,
+	["spiritstrike"] = true,
+	["steampunkrangemobshot"] = true,
+	["thirdbossbeampart"] = true,
+	["thirdbossbeamshot"] = true,
+	["thirdbossbouncingorb"] = true,
+	["thirdbossbouncingorbbeam"] = true,
+	["thirdbosscirclehit"] = true,
+	["thirdbosscirclehit2"] = true,
+	["thirdbosscrescent"] = true,
+	["thirdbosscursering"] = true,
+	["thirdbossdualswingline"] = true,
+	["thirdbossexplosionshot"] = true,
+	["thirdbossflamewall"] = true,
+	["thirdbossflamewallhitbox"] = true,
+	["thirdbossfrozencircle"] = true,
+	["thirdbosslavaline"] = true,
+	["thirdbosslifestealbeams"] = true,
+	["thirdbosslifestealhitbox"] = true,
+	["thirdbosslineshot"] = true,
+	["thirdbossmasssafespotcircles"] = true,
+	["thirdbossmemorydamagezone"] = true,
+	["thirdbossmemorysafezone"] = true,
+	["thirdbossmissile"] = true,
+	["thirdbossmultirings"] = true,
+	["thirdbossoneshotbeam"] = true,
+	["thirdbossorbshot"] = true,
+	["thirdbossoverheadringmodel"] = true,
+	["thirdbosspassiveorb"] = true,
+	["thirdbossrandomline"] = true,
+	["thirdbosssafespot"] = true,
+	["thirdbosssafespots"] = true,
+	["thirdbosssmite"] = true,
+	["thirdbossspiralorb"] = true,
+	["thirdbossspiralshot"] = true,
+	["thirdbossspreadline"] = true,
+	["thirdbosssshapecircle"] = true,
+	["volcanicfirstbossflameshot"] = true,
+	["volcanicsecondbossrandomline"] = true,
+	["familiarorb"] = true,
+	["archpriestmovingorb"] = true,
+	["vytelusspiralorb"] = true,
+	["craggcursedflame"] = true,
+	["craggpinkline"] = true,
+	["craggredline"] = true,
+	["craggxline"] = true,
+	["craggnightmaregroundslam"] = true,
+	["craggnightmarelines"] = true,
+	["vyteluslaserbeam"] = true,
+	["vytelusflamewall"] = true,
+	["vyteluspinkcirclemarkers"] = true,
+	["thirdbossfireballhitbox"] = true,
+	["thirdbossfireballhorizontalhit"] = true,
+	["archpriestwavecircles"] = true,
+	["dracanimageattack"] = true,
+}
+
+type EnemyEntry = {
+	model: Model,
+	part: BasePart,
+	hum: Humanoid?,
+	dist: number,
+	isBoss: boolean,
+}
+
+type HazardBox = {
+	name: string,
+	part: BasePart?,
+	cf: CFrame,
+	size: Vector3,
+	center: Vector3,
+	dist: number,
+}
+
+type EnemyCluster = {
+	id: string,
+	center: Vector3,
+	members: { EnemyEntry },
+	primary: EnemyEntry,
+}
+
+local STATE = {
+	LoopEnabled = false,
+	AutoQEnabled = true,
+	AutoEEnabled = true,
+	CurrentTarget = nil :: Model?,
+	CurrentTargetLabel = "None",
+	CurrentTargetHpText = "0 / 0",
+	MapEnemyCount = 0,
+	MovementModeLabel = "IDLE",
+	WaypointProgressText = "0/0",
+	LastAbilityCast = 0,
+	AimUntil = 0,
+	AimPosition = nil :: Vector3?,
+	LastGoalPos = nil :: Vector3?,
+	ActiveGoalPos = nil :: Vector3?,
+	LastPathCompute = 0,
+	ActivePath = nil :: Path?,
+	BlockedConn = nil :: RBXScriptConnection?,
+	ActiveWaypoints = {} :: { PathWaypoint },
+	WaypointIndex = 1,
+	LastStuckCheck = 0,
+	LastStuckPos = nil :: Vector3?,
+	StuckStreak = 0,
+	OverrideUntil = 0,
+	OverridePos = nil :: Vector3?,
+	UnstuckFlip = 1,
+
+	-- Single-pass group visit & wait-until-bunched state
+	RoomSignature = "",
+	VisitedGroupIds = {} :: { [string]: boolean },
+	ActiveVisitGroupId = nil :: string?,
+	ActiveVisitStart = 0,
+	HoldSpotPos = nil :: Vector3?,
+	OrbitAngle = 0,
+
+	LastHazardScan = 0,
+	ActiveHazards = {} :: { HazardBox },
+	LastHazardDodge = 0,
+	LastVisualConfigSig = "",
+	GuiContainer = nil :: Instance?,
+	Destroyed = false,
+}
+
+local refreshAllGui: (() -> ())? = nil
+local renderConn: RBXScriptConnection? = nil
+
+-- ==========================================
+-- 2. CHARACTER, ROOM & ENEMY HELPERS
+-- ==========================================
+local function disconnectBlockedListener()
+	if STATE.BlockedConn then
+		STATE.BlockedConn:Disconnect()
+		STATE.BlockedConn = nil
+	end
+	STATE.ActivePath = nil
+end
+
+local function getCharacterParts(): (Model?, Humanoid?, BasePart?)
+	local char = player.Character
+	if not char or not char.Parent then
+		return nil, nil, nil
+	end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not hum or hum.Health <= 0 or not root or not root:IsA("BasePart") then
+		return nil, nil, nil
+	end
+	return char, hum, root
+end
+
+local function resetMovementState()
+	disconnectBlockedListener()
+	STATE.ActiveWaypoints = {}
+	STATE.WaypointIndex = 1
+	STATE.WaypointProgressText = "0/0"
+	STATE.LastGoalPos = nil
+	STATE.ActiveGoalPos = nil
+	STATE.LastStuckPos = nil
+	STATE.LastStuckCheck = 0
+	STATE.StuckStreak = 0
+	STATE.OverrideUntil = 0
+	STATE.OverridePos = nil
+end
+
+local function resetGroupCycleState()
+	STATE.VisitedGroupIds = {}
+	STATE.ActiveVisitGroupId = nil
+	STATE.ActiveVisitStart = 0
+	STATE.HoldSpotPos = nil
+end
+
+local function resetCombatState(stopMovement: boolean?)
+	STATE.CurrentTarget = nil
+	STATE.CurrentTargetLabel = "None"
+	STATE.CurrentTargetHpText = "0 / 0"
+	STATE.MovementModeLabel = "IDLE"
+	STATE.AimPosition = nil
+	STATE.AimUntil = 0
+	resetMovementState()
+	resetGroupCycleState()
+
+	if stopMovement then
+		local _, hum, root = getCharacterParts()
+		if hum and root then
+			hum:MoveTo(root.Position)
+		end
+	end
+end
+
+local function isBossModel(model: Model): boolean
+	local lower = model.Name:lower()
+	if lower:find("boss") or lower:find("champion") or lower:find("lord") or lower:find("warden") or lower:find("titan") then
+		return true
+	end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if hum and hum.MaxHealth >= 500 then
+		return true
+	end
+	return false
+end
+
+local function getEnemyRoot(enemy: Instance, charModel: Model?): (BasePart?, Humanoid?)
+	if not enemy or not enemy.Parent or not enemy:IsA("Model") then
+		return nil, nil
+	end
+	if charModel and enemy == charModel then
+		return nil, nil
+	end
+	if Players:GetPlayerFromCharacter(enemy) ~= nil then
+		return nil, nil
+	end
+	local hum = enemy:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then
+		return nil, nil
+	end
+	local hrp = enemy:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then
+		return hrp, hum
+	end
+	if enemy.PrimaryPart and enemy.PrimaryPart:IsA("BasePart") then
+		return enemy.PrimaryPart, hum
+	end
+	local fallback = enemy:FindFirstChildWhichIsA("BasePart")
+	return (fallback and fallback:IsA("BasePart")) and fallback or nil, hum
+end
+
+local function isInsideExpandedBox(model: Model, rootPos: Vector3): (boolean, number)
+	local ok, cf, size = pcall(function()
+		return model:GetBoundingBox()
+	end)
+	if not ok or not cf or not size then
+		return false, math.huge
+	end
+	local halfX = size.X * 0.5 + 8
+	local halfY = size.Y * 0.5 + 12
+	local halfZ = size.Z * 0.5 + 8
+	local localPt = cf:PointToObjectSpace(rootPos)
+	if math.abs(localPt.X) <= halfX and math.abs(localPt.Y) <= halfY and math.abs(localPt.Z) <= halfZ then
+		local d = (Vector3.new(cf.Position.X, rootPos.Y, cf.Position.Z) - rootPos).Magnitude
+		return true, d
+	end
+	return false, math.huge
+end
+
+local function getCurrentRoomContainer(rootPos: Vector3): Instance
+	local dungeon = workspace:FindFirstChild("dungeon")
+	local searchRoot: Instance = dungeon or workspace
+
+	local bestContainer: Instance = searchRoot
+	local bestDist = math.huge
+
+	for _, child in ipairs(searchRoot:GetChildren()) do
+		if child:IsA("Model") then
+			local inside, d = isInsideExpandedBox(child, rootPos)
+			if inside and d < bestDist then
+				bestDist = d
+				bestContainer = child
+			end
+		elseif child:IsA("Folder") then
+			local n = child.Name:lower()
+			if n:find("room") or n:find("floor") or n:find("stage") or n:find("wave") then
+				for _, sub in ipairs(child:GetChildren()) do
+					if sub:IsA("Model") then
+						local inside, d = isInsideExpandedBox(sub, rootPos)
+						if inside and d < bestDist then
+							bestDist = d
+							bestContainer = sub
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestContainer
+end
+
+local function collectEnemiesFromContainer(container: Instance, origin: Vector3, charModel: Model?, seen: { [Model]: boolean }): { EnemyEntry }
+	local list: { EnemyEntry } = {}
+	for _, desc in ipairs(container:GetDescendants()) do
+		if desc:IsA("Model") and not seen[desc] then
+			local part, hum = getEnemyRoot(desc, charModel)
+			if part then
+				seen[desc] = true
+				local flatDist = (Vector3.new(part.Position.X, origin.Y, part.Position.Z) - origin).Magnitude
+				local yDiff = math.abs(part.Position.Y - origin.Y)
+				if yDiff <= 25 then
+					table.insert(list, {
+						model = desc,
+						part = part,
+						hum = hum,
+						dist = flatDist,
+						isBoss = isBossModel(desc),
+					})
+				end
+			end
+		end
+	end
+	return list
+end
+
+local function getRoomEnemies(origin: Vector3, charModel: Model?): { EnemyEntry }
+	local seen = {} :: { [Model]: boolean }
+	local roomContainer = getCurrentRoomContainer(origin)
+	local results = collectEnemiesFromContainer(roomContainer, origin, charModel, seen)
+
+	local fallbackRoot: Instance = workspace:FindFirstChild("dungeon") or workspace
+	local extra = collectEnemiesFromContainer(fallbackRoot, origin, charModel, seen)
+	local totalDetected = #results
+	for _, entry in ipairs(extra) do
+		totalDetected += 1
+		if entry.dist <= 110 then
+			table.insert(results, entry)
+		end
+	end
+	STATE.MapEnemyCount = math.max(#results, totalDetected)
+
+	table.sort(results, function(a, b)
+		if a.isBoss ~= b.isBoss then
+			return a.isBoss
+		end
+		return a.dist < b.dist
+	end)
+
+	return results
+end
+
+-- ==========================================
+-- 3. HAZARD SCAN (MODELS + PARTS) & VISUALS
+-- ==========================================
+local function getVisualFolder(): Folder?
+	if STATE.Destroyed then
+		return nil
+	end
+	local existing = workspace:FindFirstChild(CONFIG.VisualFolderName)
+	if existing and existing:IsA("Folder") then
+		return existing
+	end
+	local ok, folder = pcall(function()
+		local f = Instance.new("Folder")
+		f.Name = CONFIG.VisualFolderName
+		f.Parent = workspace
+		return f
+	end)
+	return ok and folder or nil
+end
+
+local function clearVisuals()
+	STATE.LastVisualConfigSig = ""
+	local folder = workspace:FindFirstChild(CONFIG.VisualFolderName)
+	if folder then
+		folder:ClearAllChildren()
+	end
+end
+
+local function makeVisualPart(name: string, parent: Instance): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanTouch = false
+	p.CanQuery = false
+	p.Material = Enum.Material.Neon
+	p.Parent = parent
+	return p
+end
+
+local function isHazardModelName(modelName: string): boolean
+	local lower = modelName:lower()
+	if KNOWN_HAZARD_MODELS[lower] then
+		return true
+	end
+	if
+		lower:find("hitbox")
+		or lower:find("hazard")
+		or lower:find("beam")
+		or lower:find("laser")
+		or lower:find("spike")
+		or lower:find("slam")
+		or lower:find("orb")
+		or lower:find("circle")
+		or lower:find("line")
+		or lower:find("flame")
+		or lower:find("ice")
+		or lower:find("poison")
+		or lower:find("bomb")
+		or lower:find("rock")
+		or lower:find("shockwave")
+	then
+		return true
+	end
+	return false
+end
+
+local function parseHazardPart(inst: Instance, charModel: Model?, originY: number, forceInclude: boolean?): HazardBox?
+	if not inst:IsA("BasePart") then
+		return nil
+	end
+	if charModel and inst:IsDescendantOf(charModel) then
+		return nil
+	end
+	if inst.Name == "PathNode" or inst.Name == "PathLine" or inst.Name == "TelegraphHighlight" then
+		return nil
+	end
+
+	local lower = inst.Name:lower()
+	if lower:find("floor") or lower:find("wall") or lower:find("ceiling") or lower:find("ground") or lower:find("safespot") then
+		return nil
+	end
+
+	if not forceInclude then
+		if inst.CanCollide then
+			return nil
+		end
+		if inst.Transparency >= 0.99 then
+			return nil
+		end
+	end
+
+	if math.abs(inst.Position.Y - originY) > 18 then
+		return nil
+	end
+
+	local maxDim = math.max(inst.Size.X, inst.Size.Y, inst.Size.Z)
+	if maxDim < 1.2 or maxDim > 160 then
+		return nil
+	end
+
+	local labelName = (inst.Parent and inst.Parent:IsA("Model")) and inst.Parent.Name or inst.Name
+	return {
+		name = labelName,
+		part = inst,
+		cf = inst.CFrame,
+		size = inst.Size,
+		center = inst.Position,
+		dist = 0,
+	}
+end
+
+local function appendHazardModelBoxes(model: Model, charModel: Model?, originY: number, origin: Vector3, boxes: { HazardBox })
+	local addedFromParts = 0
+	for _, desc in ipairs(model:GetDescendants()) do
+		local hb = parseHazardPart(desc, charModel, originY, true)
+		if hb then
+			local flatDist = (Vector3.new(hb.center.X, origin.Y, hb.center.Z) - origin).Magnitude
+			if flatDist <= CONFIG.TelegraphBufferRange then
+				hb.name = model.Name
+				hb.dist = flatDist
+				table.insert(boxes, hb)
+				addedFromParts += 1
+			end
+		end
+	end
+
+	if addedFromParts == 0 then
+		local ok, cf, size = pcall(function()
+			return model:GetBoundingBox()
+		end)
+		if ok and cf and size then
+			local flatDist = (Vector3.new(cf.Position.X, origin.Y, cf.Position.Z) - origin).Magnitude
+			if flatDist <= CONFIG.TelegraphBufferRange and math.abs(cf.Position.Y - originY) <= 18 then
+				table.insert(boxes, {
+					name = model.Name,
+					part = model.PrimaryPart,
+					cf = cf,
+					size = size,
+					center = cf.Position,
+					dist = flatDist,
+				})
+			end
+		end
+	end
+end
+
+local function scanHazards(origin: Vector3, charModel: Model?): { HazardBox }
+	local now = os.clock()
+	if now - STATE.LastHazardScan < CONFIG.HazardScanInterval then
+		return STATE.ActiveHazards
+	end
+	STATE.LastHazardScan = now
+
+	local boxes: { HazardBox } = {}
+	local seenModels = {} :: { [Model]: boolean }
+
+	for _, child in ipairs(workspace:GetChildren()) do
+		if child:IsA("Model") and not seenModels[child] and isHazardModelName(child.Name) then
+			seenModels[child] = true
+			appendHazardModelBoxes(child, charModel, origin.Y, origin, boxes)
+		end
+	end
+
+	local scanRoots: { Instance } = { workspace }
+	local dungeon = workspace:FindFirstChild("dungeon")
+	if dungeon and dungeon ~= workspace then
+		table.insert(scanRoots, dungeon)
+	end
+
+	for _, rootObj in ipairs(scanRoots) do
+		for _, desc in ipairs(rootObj:GetDescendants()) do
+			if desc:IsA("Model") and not seenModels[desc] and isHazardModelName(desc.Name) then
+				seenModels[desc] = true
+				appendHazardModelBoxes(desc, charModel, origin.Y, origin, boxes)
+			elseif desc:IsA("BasePart") then
+				local hb = parseHazardPart(desc, charModel, origin.Y, false)
+				if hb then
+					local flatDist = (Vector3.new(hb.center.X, origin.Y, hb.center.Z) - origin).Magnitude
+					if flatDist <= CONFIG.TelegraphBufferRange then
+						hb.dist = flatDist
+						table.insert(boxes, hb)
+					end
+				end
+			end
+		end
+	end
+
+	table.sort(boxes, function(a, b)
+		return a.dist < b.dist
+	end)
+
+	STATE.ActiveHazards = boxes
+	return boxes
+end
+
+local function distanceToHazardXZ(p: Vector3, hb: HazardBox): (number, Vector3)
+	local localPt = hb.cf:PointToObjectSpace(Vector3.new(p.X, hb.center.Y, p.Z))
+	local halfX = math.max(hb.size.X * 0.5, 0.25)
+	local halfZ = math.max(hb.size.Z * 0.5, 0.25)
+
+	local clampedX = math.clamp(localPt.X, -halfX, halfX)
+	local clampedZ = math.clamp(localPt.Z, -halfZ, halfZ)
+	local closestWorld = hb.cf:PointToWorldSpace(Vector3.new(clampedX, 0, clampedZ))
+
+	local diff = Vector3.new(p.X - closestWorld.X, 0, p.Z - closestWorld.Z)
+	return diff.Magnitude, closestWorld
+end
+
+local function minHazardClearance(pos: Vector3, hazards: { HazardBox }): number
+	if #hazards == 0 then
+		return math.huge
+	end
+	local minDist = math.huge
+	for _, hb in ipairs(hazards) do
+		local d = distanceToHazardXZ(pos, hb)
+		if d < minDist then
+			minDist = d
+		end
+	end
+	return minDist
+end
+
+local function isPointInHazard(pos: Vector3, hazards: { HazardBox }, extraBuffer: number): boolean
+	local thresh = CONFIG.HazardPaddingStuds + extraBuffer
+	for _, hb in ipairs(hazards) do
+		local d = distanceToHazardXZ(pos, hb)
+		if d <= thresh then
+			return true
+		end
+	end
+	return false
+end
+
+local function getTransitionWorldPos(inst: Instance): Vector3?
+	if inst:IsA("BasePart") then
+		return inst.Position
+	elseif inst:IsA("Model") then
+		local ok, cf = pcall(function()
+			return inst:GetPivot()
+		end)
+		if ok and cf then
+			return cf.Position
+		end
+	elseif inst:IsA("Attachment") then
+		return inst.WorldPosition
+	elseif inst:IsA("ProximityPrompt") then
+		local parent = inst.Parent
+		if parent then
+			return getTransitionWorldPos(parent)
+		end
+	end
+	return nil
+end
+
+local function isTransitionName(name: string): boolean
+	local n = name:lower()
+	return n:find("portal") ~= nil
+		or n:find("nextroom") ~= nil
+		or n:find("next_room") ~= nil
+		or n:find("teleporter") ~= nil
+		or n:find("exit") ~= nil
+		or n:find("door") ~= nil
+		or n:find("checkpoint") ~= nil
+		or n:find("objective") ~= nil
+		or n:find("stairs") ~= nil
+end
+
+local function findNextRoomOrObjective(origin: Vector3): Vector3?
+	local searchRoot: Instance = workspace:FindFirstChild("dungeon") or workspace
+	local bestPos: Vector3? = nil
+	local bestDist = math.huge
+
+	for _, desc in ipairs(searchRoot:GetDescendants()) do
+		if isTransitionName(desc.Name) then
+			local worldPos = getTransitionWorldPos(desc)
+			if worldPos and math.abs(worldPos.Y - origin.Y) <= 25 then
+				local flatPos = Vector3.new(worldPos.X, origin.Y, worldPos.Z)
+				local d = (flatPos - origin).Magnitude
+				if d > 4 and d < bestDist then
+					bestDist = d
+					bestPos = flatPos
+				end
+			end
+		end
+	end
+
+	return bestPos
+end
+
+-- Clean visuals: ONLY path nodes/line (when RenderPathNodes is ON) and red telegraph highlights (when HighlightTelegraphs/PickTelegraphs is ON)
+local function renderPathVisuals(startPos: Vector3, waypoints: { PathWaypoint }, startIndex: number)
+	if STATE.Destroyed or not CONFIG.RenderPathNodes then
+		local folder = workspace:FindFirstChild(CONFIG.VisualFolderName)
+		if folder then
+			for _, child in ipairs(folder:GetChildren()) do
+				if child.Name == "PathNode" or child.Name == "PathLine" then
+					child:Destroy()
+				end
+			end
+		end
+		return
+	end
+
+	local folder = getVisualFolder()
+	if not folder then
+		return
+	end
+
+	for _, child in ipairs(folder:GetChildren()) do
+		if child.Name == "PathNode" or child.Name == "PathLine" then
+			child:Destroy()
+		end
+	end
+
+	if #waypoints == 0 or startIndex > #waypoints then
+		return
+	end
+
+	local prevPos = Vector3.new(startPos.X, startPos.Y + 0.4, startPos.Z)
+	for i = startIndex, #waypoints do
+		local wpPos = Vector3.new(waypoints[i].Position.X, startPos.Y + 0.4, waypoints[i].Position.Z)
+
+		local dot = makeVisualPart("PathNode", folder)
+		dot.Shape = Enum.PartType.Ball
+		dot.Size = Vector3.new(0.65, 0.65, 0.65)
+		dot.CFrame = CFrame.new(wpPos)
+		dot.Color = Color3.fromRGB(0, 205, 255)
+		dot.Transparency = 0.15
+
+		local diff = wpPos - prevPos
+		local dist = diff.Magnitude
+		if dist > 0.05 then
+			local beamPart = makeVisualPart("PathLine", folder)
+			beamPart.Size = Vector3.new(0.22, 0.22, dist)
+			beamPart.CFrame = CFrame.lookAt(prevPos + diff * 0.5, wpPos)
+			beamPart.Color = Color3.fromRGB(0, 175, 255)
+			beamPart.Transparency = 0.3
+		end
+
+		prevPos = wpPos
+	end
+end
+
+local function updateTelegraphVisuals(rootPos: Vector3, hazards: { HazardBox })
+	if STATE.Destroyed then
+		return
+	end
+	local folder = getVisualFolder()
+	if not folder then
+		return
+	end
+
+	for _, child in ipairs(folder:GetChildren()) do
+		if child.Name == "TelegraphHighlight" then
+			child:Destroy()
+		end
+	end
+
+	if not (CONFIG.HighlightTelegraphs or CONFIG.PickTelegraphs) then
+		return
+	end
+
+	local floorY = rootPos.Y - 2.1
+	for _, hb in ipairs(hazards) do
+		if hb.dist <= 65 then
+			local boxHighlight = makeVisualPart("TelegraphHighlight", folder)
+			boxHighlight.Size = Vector3.new(math.max(hb.size.X, 1.2), 0.25, math.max(hb.size.Z, 1.2))
+			boxHighlight.CFrame = CFrame.new(hb.center.X, floorY, hb.center.Z) * hb.cf.Rotation
+			boxHighlight.Color = CONFIG.PickTelegraphs and Color3.fromRGB(255, 190, 45) or Color3.fromRGB(255, 45, 45)
+			boxHighlight.Transparency = 0.58
+		end
+	end
+end
+
+-- ==========================================
+-- 4. NAVIGATION, DODGE & GROUP GATHERING
+-- ==========================================
+local function isSegmentClear(fromPos: Vector3, toPos: Vector3, charModel: Model?): boolean
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local exclude: { Instance } = {}
+	if charModel then
+		table.insert(exclude, charModel)
+	end
+	local vis = workspace:FindFirstChild(CONFIG.VisualFolderName)
+	if vis then
+		table.insert(exclude, vis)
+	end
+	params.FilterDescendantsInstances = exclude
+
+	local delta = toPos - fromPos
+	if delta.Magnitude < 0.1 then
+		return true
+	end
+	local result = workspace:Raycast(fromPos + Vector3.new(0, 1.0, 0), delta, params)
+	if not result then
+		return true
+	end
+	return result.Distance >= math.max(0.5, delta.Magnitude - CONFIG.WallPaddingClearance)
+end
+
+local function setMovementOverride(hum: Humanoid, movePos: Vector3, duration: number, shouldJump: boolean?)
+	STATE.OverridePos = movePos
+	STATE.OverrideUntil = os.clock() + duration
+	if shouldJump then
+		hum.Jump = true
+	end
+	hum:MoveTo(movePos)
+end
+
+local function tickMovementOverride(root: BasePart, hum: Humanoid): boolean
+	local now = os.clock()
+	if STATE.OverridePos and now < STATE.OverrideUntil then
+		hum:MoveTo(STATE.OverridePos)
+		local dist = (STATE.OverridePos - root.Position).Magnitude
+		if dist <= 2.5 then
+			STATE.OverridePos = nil
+			STATE.OverrideUntil = 0
+		end
+		return true
+	end
+	STATE.OverridePos = nil
+	STATE.OverrideUntil = 0
+	return false
+end
+
+local function scoreSafeCandidate(cand: Vector3, origin: Vector3, hazards: { HazardBox }, charModel: Model?): number
+	if not isSegmentClear(origin, cand, charModel) then
+		return -math.huge
+	end
+
+	local minClearance = minHazardClearance(cand, hazards)
+	local score = 0
+
+	if minClearance > CONFIG.HazardPaddingStuds + 1.5 then
+		score += 300
+	elseif not isPointInHazard(cand, hazards, 0) then
+		score += 120
+	else
+		score -= (CONFIG.HazardPaddingStuds - minClearance) * 40
+	end
+
+	score += math.min(minClearance, 35) * 4
+	score += math.min((cand - origin).Magnitude, 20) * 0.5
+	return score
+end
+
+local function findSafePointNear(desiredPos: Vector3, origin: Vector3, hazards: { HazardBox }, charModel: Model?): Vector3
+	if #hazards == 0 or not isPointInHazard(desiredPos, hazards, 0.5) then
+		return desiredPos
+	end
+
+	local bestPos = desiredPos
+	local bestScore = scoreSafeCandidate(desiredPos, origin, hazards, charModel)
+
+	local radii = { 6, 10, 15 }
+	local angles = 12
+	for _, r in ipairs(radii) do
+		for i = 0, angles - 1 do
+			local theta = (i / angles) * math.pi * 2
+			local offset = Vector3.new(math.cos(theta) * r, 0, math.sin(theta) * r)
+			local cand = Vector3.new(desiredPos.X + offset.X, origin.Y, desiredPos.Z + offset.Z)
+			local sc = scoreSafeCandidate(cand, origin, hazards, charModel)
+			if sc > bestScore then
+				bestScore = sc
+				bestPos = cand
+			end
+		end
+	end
+
+	return bestPos
+end
+
+local function dodgeHazards(root: BasePart, hum: Humanoid, hazards: { HazardBox }, charModel: Model?): boolean
+	if tickMovementOverride(root, hum) then
+		return true
+	end
+	if #hazards == 0 then
+		return false
+	end
+
+	local escapeVec = Vector3.zero
+	local maxNeed = 0
+	local safeThresh = CONFIG.HazardPaddingStuds
+
+	for _, hb in ipairs(hazards) do
+		local dist, closestPt = distanceToHazardXZ(root.Position, hb)
+		if dist < safeThresh then
+			local diff = Vector3.new(root.Position.X - closestPt.X, 0, root.Position.Z - closestPt.Z)
+			local awayDir = diff.Magnitude > 0.05 and diff.Unit or (-root.CFrame.LookVector)
+			local need = (safeThresh - dist) + 7.5
+			escapeVec += Vector3.new(awayDir.X, 0, awayDir.Z).Unit * (need * 2.0)
+			maxNeed = math.max(maxNeed, need)
+		end
+	end
+
+	if escapeVec.Magnitude < 0.05 then
+		return false
+	end
+
+	local now = os.clock()
+	if now - STATE.LastHazardDodge < CONFIG.HazardDodgeCooldown then
+		return true
+	end
+	STATE.LastHazardDodge = now
+
+	local stepDist = math.clamp(maxNeed, 11.0, 19.0)
+	local baseDir = escapeVec.Unit
+	local side = Vector3.new(-baseDir.Z, 0, baseDir.X)
+
+	local candidates = {
+		root.Position + baseDir * stepDist,
+		root.Position + side * stepDist,
+		root.Position - side * stepDist,
+		root.Position + (baseDir * 0.75 + side * 0.65).Unit * stepDist,
+		root.Position + (baseDir * 0.75 - side * 0.65).Unit * stepDist,
+		root.Position + (baseDir * 0.35 + side * 0.93).Unit * stepDist,
+		root.Position + (baseDir * 0.35 - side * 0.93).Unit * stepDist,
+		root.Position + baseDir * (stepDist * 1.4),
+	}
+
+	local bestPos: Vector3? = nil
+	local bestScore = -math.huge
+
+	for _, cand in ipairs(candidates) do
+		local sc = scoreSafeCandidate(cand, root.Position, hazards, charModel)
+		if sc > bestScore then
+			bestScore = sc
+			bestPos = cand
+		end
+	end
+
+	local chosenGoal = bestPos or (root.Position + side * stepDist)
+	resetMovementState()
+	setMovementOverride(hum, chosenGoal, 0.45, false)
+	return true
+end
+
+local function handleStuck(root: BasePart, hum: Humanoid, goalPos: Vector3, charModel: Model?, hazards: { HazardBox }): boolean
+	if tickMovementOverride(root, hum) then
+		return true
+	end
+
+	local now = os.clock()
+	if not STATE.LastStuckPos then
+		STATE.LastStuckPos = root.Position
+		STATE.LastStuckCheck = now
+		return false
+	end
+
+	if now - STATE.LastStuckCheck >= CONFIG.StuckCheckInterval then
+		local moved = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(STATE.LastStuckPos.X, 0, STATE.LastStuckPos.Z)).Magnitude
+		local wantMove = (Vector3.new(goalPos.X, 0, goalPos.Z) - Vector3.new(root.Position.X, 0, root.Position.Z)).Magnitude > 3.0
+
+		STATE.LastStuckPos = root.Position
+		STATE.LastStuckCheck = now
+
+		if wantMove and moved < CONFIG.StuckMinMoveDist then
+			STATE.StuckStreak += 1
+			if STATE.StuckStreak >= 2 then
+				STATE.UnstuckFlip = -STATE.UnstuckFlip
+			end
+
+			local toGoal = Vector3.new(goalPos.X - root.Position.X, 0, goalPos.Z - root.Position.Z)
+			local baseDir = toGoal.Magnitude > 0.05 and toGoal.Unit or root.CFrame.LookVector
+			local perp = Vector3.new(-baseDir.Z, 0, baseDir.X) * STATE.UnstuckFlip
+
+			local escapeDirs = {
+				(perp * 0.85 + baseDir * 0.5).Unit,
+				(-perp * 0.85 + baseDir * 0.5).Unit,
+				perp.Unit,
+				(-perp).Unit,
+			}
+
+			local chosenEscape = root.Position + perp * 8
+			local bestEscapeScore = -math.huge
+			for _, dir in ipairs(escapeDirs) do
+				local testPos = root.Position + dir * 9.0
+				local sc = scoreSafeCandidate(testPos, root.Position, hazards, charModel)
+				if sc > bestEscapeScore then
+					bestEscapeScore = sc
+					chosenEscape = testPos
+				end
+			end
+
+			STATE.LastPathCompute = 0
+			disconnectBlockedListener()
+			STATE.ActiveWaypoints = {}
+			setMovementOverride(hum, chosenEscape, 0.60, true)
+			return true
+		else
+			STATE.StuckStreak = 0
+		end
+	end
+
+	return false
+end
+
+local function filterWaypointsAwayFromHazards(waypoints: { PathWaypoint }, hazards: { HazardBox }): { PathWaypoint }
+	if #hazards == 0 or #waypoints <= 2 then
+		return waypoints
+	end
+
+	local filtered: { PathWaypoint } = {}
+	for i, wp in ipairs(waypoints) do
+		local isEndpoint = (i == 1) or (i == #waypoints)
+		if isEndpoint or not isPointInHazard(wp.Position, hazards, 0) then
+			table.insert(filtered, wp)
+		end
+	end
+
+	if #filtered >= 2 then
+		return filtered
+	end
+	return waypoints
+end
+
+local function computePathTo(origin: Vector3, goal: Vector3, hum: Humanoid, charModel: Model?, hazards: { HazardBox })
+	disconnectBlockedListener()
+
+	if isSegmentClear(origin, goal, charModel) and not isPointInHazard(goal, hazards, 0) then
+		STATE.ActiveWaypoints = {
+			PathWaypoint.new(goal, Enum.PathWaypointAction.Walk),
+		}
+		STATE.WaypointIndex = 1
+		STATE.WaypointProgressText = "1/1"
+		STATE.LastGoalPos = goal
+		renderPathVisuals(origin, STATE.ActiveWaypoints, 1)
+		hum:MoveTo(goal)
+		return
+	end
+
+	local path = PathfindingService:CreatePath({
+		AgentRadius = math.max(1.5, CONFIG.WallPaddingClearance),
+		AgentHeight = 5.0,
+		AgentCanJump = true,
+		AgentCanClimb = true,
+		WaypointSpacing = 4.0,
+	})
+
+	local ok = pcall(function()
+		path:ComputeAsync(origin, goal)
+	end)
+
+	if ok and path.Status == Enum.PathStatus.Success then
+		STATE.ActivePath = path
+		STATE.BlockedConn = path.Blocked:Connect(function(blockedIdx: number)
+			if blockedIdx >= STATE.WaypointIndex then
+				STATE.LastPathCompute = 0
+				STATE.ActiveWaypoints = {}
+				disconnectBlockedListener()
+			end
+		end)
+
+		local rawWaypoints = path:GetWaypoints()
+		local waypoints = filterWaypointsAwayFromHazards(rawWaypoints, hazards)
+		if #waypoints > 1 then
+			STATE.ActiveWaypoints = waypoints
+			STATE.WaypointIndex = 2
+			STATE.WaypointProgressText = string.format("%d/%d", STATE.WaypointIndex, #waypoints)
+			STATE.LastGoalPos = goal
+			renderPathVisuals(origin, STATE.ActiveWaypoints, STATE.WaypointIndex)
+			return
+		end
+	end
+
+	STATE.ActiveWaypoints = {
+		PathWaypoint.new(goal, Enum.PathWaypointAction.Walk),
+	}
+	STATE.WaypointIndex = 1
+	STATE.WaypointProgressText = "1/1"
+	STATE.LastGoalPos = goal
+	renderPathVisuals(origin, STATE.ActiveWaypoints, 1)
+	hum:MoveTo(goal)
+end
+
+local function moveToGoal(root: BasePart, hum: Humanoid, rawGoalPos: Vector3, charModel: Model?, hazards: { HazardBox })
+	local goalPos = findSafePointNear(rawGoalPos, root.Position, hazards, charModel)
+	STATE.ActiveGoalPos = goalPos
+
+	if handleStuck(root, hum, goalPos, charModel, hazards) then
+		return
+	end
+
+	local now = os.clock()
+	local goalMoved = (not STATE.LastGoalPos) or ((goalPos - STATE.LastGoalPos).Magnitude > 2.0)
+
+	if now - STATE.LastPathCompute >= CONFIG.RepathInterval or goalMoved then
+		STATE.LastPathCompute = now
+		computePathTo(root.Position, goalPos, hum, charModel, hazards)
+	end
+
+	local wp = STATE.ActiveWaypoints[STATE.WaypointIndex]
+	if wp then
+		STATE.WaypointProgressText = string.format("%d/%d", STATE.WaypointIndex, #STATE.ActiveWaypoints)
+		if wp.Action == Enum.PathWaypointAction.Jump or wp.Action == Enum.PathWaypointAction.Climb then
+			hum.Jump = true
+		end
+		hum:MoveTo(wp.Position)
+
+		local dist3D = (wp.Position - root.Position).Magnitude
+		if dist3D <= CONFIG.WaypointReachDist then
+			STATE.WaypointIndex += 1
+			if STATE.WaypointIndex > #STATE.ActiveWaypoints then
+				STATE.ActiveWaypoints = {}
+				STATE.WaypointProgressText = "0/0"
+				disconnectBlockedListener()
+			else
+				STATE.WaypointProgressText = string.format("%d/%d", STATE.WaypointIndex, #STATE.ActiveWaypoints)
+			end
+			renderPathVisuals(root.Position, STATE.ActiveWaypoints, STATE.WaypointIndex)
+		end
+	else
+		hum:MoveTo(goalPos)
+	end
+end
+
+local function facePositionFlat(root: BasePart, targetPos: Vector3)
+	if STATE.OverridePos and os.clock() < STATE.OverrideUntil then
+		return
+	end
+	local lookAtPos = Vector3.new(targetPos.X, root.Position.Y, targetPos.Z)
+	if (lookAtPos - root.Position).Magnitude > 0.05 then
+		local desiredCf = CFrame.lookAt(root.Position, lookAtPos)
+		root.CFrame = root.CFrame:Lerp(desiredCf, 0.35)
+	end
+end
+
+local function triggerSkillButtonIfPresent(keyLabel: string): boolean
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return false
+	end
+	for _, desc in ipairs(playerGui:GetDescendants()) do
+		if desc:IsA("GuiButton") and desc.Visible then
+			local n = desc.Name:lower()
+			local txt = (desc:IsA("TextButton") and desc.Text:lower() or "")
+			if n == keyLabel:lower() or txt == keyLabel:lower() then
+				local fired = false
+				for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down" }) do
+					local ok, sig = pcall(function()
+						return (desc :: any)[sigName]
+					end)
+					if ok and sig and typeof(sig) == "RBXScriptSignal" then
+						pcall(function()
+							sig:Fire()
+							fired = true
+						end)
+					end
+				end
+				if fired then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function pressKey(keyCode: Enum.KeyCode, fallbackLabel: string)
+	local sent = pcall(function()
+		VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+		task.delay(0.06, function()
+			pcall(function()
+				VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+			end)
+		end)
+	end)
+	if not sent and fallbackLabel ~= "" then
+		triggerSkillButtonIfPresent(fallbackLabel)
+	end
+end
+
+local function lookAtAndCastAbilities(root: BasePart, aimPos: Vector3)
+	local now = os.clock()
+	facePositionFlat(root, aimPos)
+	STATE.AimPosition = aimPos
+	STATE.AimUntil = now + CONFIG.AimHoldDuration
+
+	if now - STATE.LastAbilityCast < CONFIG.AbilityCooldown then
+		return
+	end
+
+	STATE.LastAbilityCast = now
+	if STATE.AutoEEnabled then
+		pressKey(Enum.KeyCode.E, "E")
+	end
+	if STATE.AutoQEnabled then
+		task.delay(0.14, function()
+			if STATE.LoopEnabled and STATE.AutoQEnabled and not STATE.Destroyed then
+				pressKey(Enum.KeyCode.Q, "Q")
+			end
+		end)
+	end
+end
+
+local function buildEnemyClusters(roomEnemies: { EnemyEntry }, clusterRadius: number): { EnemyCluster }
+	local visited: { [number]: boolean } = {}
+	local clusters: { EnemyCluster } = {}
+
+	for i, seed in ipairs(roomEnemies) do
+		if not visited[i] and seed.part and seed.part.Parent then
+			visited[i] = true
+			local members: { EnemyEntry } = { seed }
+			local queue: { number } = { i }
+
+			while #queue > 0 do
+				local currIdx = table.remove(queue, 1) :: number
+				local currPart = roomEnemies[currIdx].part
+				for j, cand in ipairs(roomEnemies) do
+					if not visited[j] and cand.part and cand.part.Parent then
+						local d = (Vector3.new(cand.part.Position.X, currPart.Position.Y, cand.part.Position.Z) - currPart.Position).Magnitude
+						if d <= clusterRadius then
+							visited[j] = true
+							table.insert(members, cand)
+							table.insert(queue, j)
+						end
+					end
+				end
+			end
+
+			local sx, sz = 0, 0
+			for _, m in ipairs(members) do
+				sx += m.part.Position.X
+				sz += m.part.Position.Z
+			end
+			local cx = sx / #members
+			local cz = sz / #members
+			local clusterId = string.format("grp_%d_%d", math.round(cx / 12), math.round(cz / 12))
+
+			table.insert(clusters, {
+				id = clusterId,
+				center = Vector3.new(cx, seed.part.Position.Y, cz),
+				members = members,
+				primary = members[1],
+			})
+		end
+	end
+
+	return clusters
+end
+
+local function areEnemiesBunched(roomEnemies: { EnemyEntry }, clusterRadius: number): boolean
+	if #roomEnemies <= 1 then
+		return true
+	end
+	local sx, sz, count = 0, 0, 0
+	for _, e in ipairs(roomEnemies) do
+		if e.part and e.part.Parent then
+			sx += e.part.Position.X
+			sz += e.part.Position.Z
+			count += 1
+		end
+	end
+	if count <= 1 then
+		return true
+	end
+	local cx, cz = sx / count, sz / count
+	for _, e in ipairs(roomEnemies) do
+		local d = (Vector3.new(e.part.Position.X - cx, 0, e.part.Position.Z - cz)).Magnitude
+		if d > clusterRadius then
+			return false
+		end
+	end
+	return true
+end
+
+local function computePackCentroid(enemies: { EnemyEntry }, fallbackY: number): Vector3
+	local sx, sz, count = 0, 0, 0
+	for _, e in ipairs(enemies) do
+		if e.part and e.part.Parent then
+			sx += e.part.Position.X
+			sz += e.part.Position.Z
+			count += 1
+		end
+	end
+	if count == 0 then
+		return Vector3.new(0, fallbackY, 0)
+	end
+	return Vector3.new(sx / count, fallbackY, sz / count)
+end
+
+-- ==========================================
+-- 5. DUNGEON AUTOFARM GUI (RELIABLE PARENTING)
+-- ==========================================
+local function getGuiParent(): Instance?
+	local okCore, core = pcall(function()
+		return CoreGui
+	end)
+	if okCore and core then
+		local testOk = pcall(function()
+			local f = Instance.new("Folder")
+			f.Name = "_GuiParentTest"
+			f.Parent = core
+			f:Destroy()
+		end)
+		if testOk then
+			return core
+		end
+	end
+
+	local pGui = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui", 10)
+	return pGui
+end
+
+local function makeSliderRow(
+	parent: Instance,
+	labelText: string,
+	getVal: () -> number,
+	setVal: (number) -> (),
+	minVal: number,
+	maxVal: number,
+	decimals: number
+): () -> ()
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 34)
+	container.BackgroundTransparency = 1
+	container.Parent = parent
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 0, 14)
+	lbl.Position = UDim2.fromOffset(0, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.TextColor3 = Color3.fromRGB(215, 220, 232)
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 11
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = container
+
+	local track = Instance.new("TextButton")
+	track.Size = UDim2.new(1, 0, 0, 6)
+	track.Position = UDim2.fromOffset(0, 20)
+	track.BackgroundColor3 = Color3.fromRGB(46, 50, 62)
+	track.Text = ""
+	track.AutoButtonColor = false
+	track.BorderSizePixel = 0
+	track.Parent = container
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(0.5, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(68, 138, 255)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(12, 12)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.new(0.5, 0, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(240, 244, 255)
+	knob.BorderSizePixel = 0
+	knob.Parent = track
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+	local dragging = false
+
+	local function refresh()
+		local v = getVal()
+		if decimals == 0 then
+			lbl.Text = string.format("%s: %d", labelText, math.round(v))
+		else
+			lbl.Text = string.format("%s: %." .. tostring(decimals) .. "f", labelText, v)
+		end
+		local alpha = math.clamp((v - minVal) / math.max(0.0001, maxVal - minVal), 0, 1)
+		fill.Size = UDim2.new(alpha, 0, 1, 0)
+		knob.Position = UDim2.new(alpha, 0, 0.5, 0)
+	end
+
+	local function updateFromX(inputX: number)
+		local absPos = track.AbsolutePosition.X
+		local absSize = math.max(1, track.AbsoluteSize.X)
+		local alpha = math.clamp((inputX - absPos) / absSize, 0, 1)
+		local raw = minVal + alpha * (maxVal - minVal)
+		local mult = 10 ^ decimals
+		local snapped = math.round(raw * mult) / mult
+		setVal(math.clamp(snapped, minVal, maxVal))
+		STATE.LastVisualConfigSig = ""
+		refresh()
+	end
+
+	track.MouseButton1Down:Connect(function(x: number)
+		dragging = true
+		updateFromX(x)
+	end)
+
+	UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	RunService.RenderStepped:Connect(function()
+		if STATE.Destroyed then
+			return
+		end
+		if dragging then
+			local loc = UserInputService:GetMouseLocation()
+			updateFromX(loc.X)
+		end
+	end)
+
+	refresh()
+	return refresh
+end
+
+local function makeToggleButton(parent: Instance, height: number, colorOn: Color3, colorOff: Color3, getActive: () -> boolean, getLabel: () -> string, onClick: () -> ()): (TextButton, () -> ())
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, 0, 0, height)
+	btn.BorderSizePixel = 0
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 11
+	btn.AutoButtonColor = true
+	btn.Parent = parent
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+	local function refresh()
+		btn.Text = getLabel()
+		btn.BackgroundColor3 = getActive() and colorOn or colorOff
+	end
+
+	btn.MouseButton1Click:Connect(function()
+		onClick()
+		refresh()
+	end)
+
+	refresh()
+	return btn, refresh
+end
+
+local function destroyScript()
+	if STATE.Destroyed then
+		return
+	end
+	STATE.Destroyed = true
+	STATE.LoopEnabled = false
+	resetCombatState(true)
+	clearVisuals()
+	if renderConn then
+		renderConn:Disconnect()
+		renderConn = nil
+	end
+	local visFolder = workspace:FindFirstChild(CONFIG.VisualFolderName)
+	if visFolder then
+		visFolder:Destroy()
+	end
+	if STATE.GuiContainer and STATE.GuiContainer.Parent then
+		STATE.GuiContainer:Destroy()
+	end
+	local playerGui = player:FindFirstChildOfClass("PlayerGui")
+	if playerGui then
+		local g = playerGui:FindFirstChild("DungeonAutofarmGui")
+		if g then
+			g:Destroy()
+		end
+	end
+end
+
+local function createGui()
+	local parentObj = getGuiParent()
+	if not parentObj then
+		warn("[DungeonAutofarm] Could not find CoreGui or PlayerGui.")
+		return
+	end
+
+	local existing = parentObj:FindFirstChild("DungeonAutofarmGui")
+	if existing then
+		existing:Destroy()
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "DungeonAutofarmGui"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 999999
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Enabled = true
+	gui.Parent = parentObj
+	STATE.GuiContainer = gui
+
+	-- Left-side Active Telegraphs Feed
+	local feedFrame = Instance.new("Frame")
+	feedFrame.Name = "TelegraphsFeed"
+	feedFrame.Size = UDim2.fromOffset(235, 232)
+	feedFrame.Position = UDim2.new(1, -510, 0, 34)
+	feedFrame.BackgroundColor3 = Color3.fromRGB(17, 19, 25)
+	feedFrame.BackgroundTransparency = 0.25
+	feedFrame.BorderSizePixel = 0
+	feedFrame.Parent = gui
+	Instance.new("UICorner", feedFrame).CornerRadius = UDim.new(0, 6)
+
+	local feedStroke = Instance.new("UIStroke")
+	feedStroke.Color = Color3.fromRGB(42, 46, 58)
+	feedStroke.Thickness = 1
+	feedStroke.Parent = feedFrame
+
+	local feedTitle = Instance.new("TextLabel")
+	feedTitle.Size = UDim2.new(1, -16, 0, 22)
+	feedTitle.Position = UDim2.fromOffset(8, 4)
+	feedTitle.BackgroundTransparency = 1
+	feedTitle.Text = "Active Telegraphs Feed"
+	feedTitle.TextColor3 = Color3.fromRGB(115, 165, 255)
+	feedTitle.Font = Enum.Font.GothamBold
+	feedTitle.TextSize = 11
+	feedTitle.TextXAlignment = Enum.TextXAlignment.Left
+	feedTitle.Parent = feedFrame
+
+	local feedRows: { TextLabel } = {}
+	for i = 1, 8 do
+		local rowLbl = Instance.new("TextLabel")
+		rowLbl.Size = UDim2.new(1, -16, 0, 22)
+		rowLbl.Position = UDim2.fromOffset(8, 26 + (i - 1) * 24)
+		rowLbl.BackgroundColor3 = Color3.fromRGB(28, 30, 38)
+		rowLbl.BackgroundTransparency = 0.35
+		rowLbl.BorderSizePixel = 0
+		rowLbl.Text = "No active hazards detected"
+		rowLbl.TextColor3 = Color3.fromRGB(145, 150, 165)
+		rowLbl.Font = Enum.Font.Gotham
+		rowLbl.TextSize = 10
+		rowLbl.TextTruncate = Enum.TextTruncate.AtEnd
+		rowLbl.Parent = feedFrame
+		Instance.new("UICorner", rowLbl).CornerRadius = UDim.new(0, 4)
+		table.insert(feedRows, rowLbl)
+	end
+
+	-- Right-side docked control panel
+	local panel = Instance.new("Frame")
+	panel.Name = "DungeonAutofarmPanel"
+	panel.Size = UDim2.new(0, 258, 1, -24)
+	panel.Position = UDim2.new(1, -266, 0, 12)
+	panel.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+	panel.BackgroundTransparency = 0.06
+	panel.BorderSizePixel = 0
+	panel.Parent = gui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Color = Color3.fromRGB(45, 50, 64)
+	panelStroke.Thickness = 1
+	panelStroke.Parent = panel
+
+	-- Drag support via header title
+	local headerTitle = Instance.new("TextLabel")
+	headerTitle.Size = UDim2.new(1, -68, 0, 22)
+	headerTitle.Position = UDim2.fromOffset(10, 6)
+	headerTitle.BackgroundTransparency = 1
+	headerTitle.Text = "Dungeon Autofarm"
+	headerTitle.TextColor3 = Color3.fromRGB(238, 242, 250)
+	headerTitle.Font = Enum.Font.GothamBold
+	headerTitle.TextSize = 13
+	headerTitle.TextXAlignment = Enum.TextXAlignment.Left
+	headerTitle.Parent = panel
+
+	local dragBtn = Instance.new("TextButton")
+	dragBtn.Size = UDim2.new(1, -68, 0, 22)
+	dragBtn.Position = UDim2.fromOffset(10, 6)
+	dragBtn.BackgroundTransparency = 1
+	dragBtn.Text = ""
+	dragBtn.Parent = panel
+
+	local draggingPanel = false
+	local dragOffset = Vector2.zero
+	dragBtn.InputBegan:Connect(function(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			draggingPanel = true
+			local m = UserInputService:GetMouseLocation()
+			dragOffset = Vector2.new(m.X - panel.AbsolutePosition.X, m.Y - panel.AbsolutePosition.Y)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			draggingPanel = false
+		end
+	end)
+	RunService.RenderStepped:Connect(function()
+		if not STATE.Destroyed and draggingPanel then
+			local m = UserInputService:GetMouseLocation()
+			panel.Position = UDim2.fromOffset(m.X - dragOffset.X, m.Y - dragOffset.Y)
+		end
+	end)
+
+	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if STATE.Destroyed then
+			return
+		end
+		if not gameProcessed and input.KeyCode == Enum.KeyCode.RightShift then
+			gui.Enabled = not gui.Enabled
+		end
+	end)
+
+	local verBadge = Instance.new("TextLabel")
+	verBadge.Size = UDim2.fromOffset(44, 18)
+	verBadge.Position = UDim2.new(1, -54, 0, 8)
+	verBadge.BackgroundColor3 = Color3.fromRGB(36, 40, 52)
+	verBadge.Text = "v1.16.0"
+	verBadge.TextColor3 = Color3.fromRGB(130, 175, 255)
+	verBadge.Font = Enum.Font.GothamBold
+	verBadge.TextSize = 10
+	verBadge.Parent = panel
+	Instance.new("UICorner", verBadge).CornerRadius = UDim.new(0, 4)
+
+	local statusLbl = Instance.new("TextLabel")
+	statusLbl.Size = UDim2.new(1, -20, 0, 16)
+	statusLbl.Position = UDim2.fromOffset(10, 28)
+	statusLbl.BackgroundTransparency = 1
+	statusLbl.Text = "Status: Idle"
+	statusLbl.TextColor3 = Color3.fromRGB(170, 178, 194)
+	statusLbl.Font = Enum.Font.GothamMedium
+	statusLbl.TextSize = 11
+	statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+	statusLbl.Parent = panel
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Size = UDim2.new(1, -16, 1, -72)
+	scroll.Position = UDim2.fromOffset(8, 48)
+	scroll.BackgroundTransparency = 1
+	scroll.ScrollBarThickness = 3
+	scroll.CanvasSize = UDim2.fromOffset(0, 620)
+	scroll.Parent = panel
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.Padding = UDim.new(0, 6)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = scroll
+
+	local greenOn = Color3.fromRGB(36, 152, 92)
+	local darkOff = Color3.fromRGB(48, 53, 66)
+
+	local _, refreshLoop = makeToggleButton(scroll, 28, greenOn, darkOff, function()
+		return STATE.LoopEnabled
+	end, function()
+		return STATE.LoopEnabled and "Loop: ON" or "Loop: OFF"
+	end, function()
+		STATE.LoopEnabled = not STATE.LoopEnabled
+		if not STATE.LoopEnabled then
+			resetCombatState(true)
+			clearVisuals()
+		end
+	end)
+
+	-- Telemetry card
+	local infoCard = Instance.new("Frame")
+	infoCard.Size = UDim2.new(1, 0, 0, 96)
+	infoCard.BackgroundColor3 = Color3.fromRGB(27, 30, 38)
+	infoCard.BorderSizePixel = 0
+	infoCard.Parent = scroll
+	Instance.new("UICorner", infoCard).CornerRadius = UDim.new(0, 6)
+
+	local function makeInfoLine(y: number, color: Color3): TextLabel
+		local l = Instance.new("TextLabel")
+		l.Size = UDim2.new(1, -12, 0, 16)
+		l.Position = UDim2.fromOffset(6, y)
+		l.BackgroundTransparency = 1
+		l.TextColor3 = color
+		l.Font = Enum.Font.Gotham
+		l.TextSize = 10
+		l.TextXAlignment = Enum.TextXAlignment.Left
+		l.TextTruncate = Enum.TextTruncate.AtEnd
+		l.Parent = infoCard
+		return l
+	end
+
+	local enemiesLine = makeInfoLine(5, Color3.fromRGB(190, 198, 214))
+	local targetLine = makeInfoLine(22, Color3.fromRGB(190, 198, 214))
+	local hpLine = makeInfoLine(39, Color3.fromRGB(170, 178, 194))
+	local teleLine = makeInfoLine(56, Color3.fromRGB(190, 198, 214))
+	local moveLine = makeInfoLine(73, Color3.fromRGB(115, 175, 255))
+
+	-- Auto Q / Auto E row
+	local eqRow = Instance.new("Frame")
+	eqRow.Size = UDim2.new(1, 0, 0, 26)
+	eqRow.BackgroundTransparency = 1
+	eqRow.Parent = scroll
+
+	local autoQBtn = Instance.new("TextButton")
+	autoQBtn.Size = UDim2.new(0.49, 0, 1, 0)
+	autoQBtn.Position = UDim2.fromScale(0, 0)
+	autoQBtn.BorderSizePixel = 0
+	autoQBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	autoQBtn.Font = Enum.Font.GothamBold
+	autoQBtn.TextSize = 11
+	autoQBtn.Parent = eqRow
+	Instance.new("UICorner", autoQBtn).CornerRadius = UDim.new(0, 5)
+
+	local autoEBtn = Instance.new("TextButton")
+	autoEBtn.Size = UDim2.new(0.49, 0, 1, 0)
+	autoEBtn.Position = UDim2.fromScale(0.51, 0)
+	autoEBtn.BorderSizePixel = 0
+	autoEBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	autoEBtn.Font = Enum.Font.GothamBold
+	autoEBtn.TextSize = 11
+	autoEBtn.Parent = eqRow
+	Instance.new("UICorner", autoEBtn).CornerRadius = UDim.new(0, 5)
+
+	local function refreshEQ()
+		autoQBtn.Text = STATE.AutoQEnabled and "Auto Q: ON" or "Auto Q: OFF"
+		autoQBtn.BackgroundColor3 = STATE.AutoQEnabled and greenOn or darkOff
+		autoEBtn.Text = STATE.AutoEEnabled and "Auto E: ON" or "Auto E: OFF"
+		autoEBtn.BackgroundColor3 = STATE.AutoEEnabled and greenOn or darkOff
+	end
+
+	autoQBtn.MouseButton1Click:Connect(function()
+		STATE.AutoQEnabled = not STATE.AutoQEnabled
+		refreshEQ()
+	end)
+
+	autoEBtn.MouseButton1Click:Connect(function()
+		STATE.AutoEEnabled = not STATE.AutoEEnabled
+		refreshEQ()
+	end)
+
+	local refreshAttackRange = makeSliderRow(scroll, "Attack range", function()
+		return CONFIG.CastRangeStuds
+	end, function(v)
+		CONFIG.CastRangeStuds = v
+	end, 5, 45, 0)
+
+	local refreshSafeDist = makeSliderRow(scroll, "Safe distance", function()
+		return CONFIG.EngageDistanceStuds
+	end, function(v)
+		CONFIG.EngageDistanceStuds = v
+	end, 4, 28, 0)
+
+	local refreshWallPad = makeSliderRow(scroll, "Wall padding clearance", function()
+		return CONFIG.WallPaddingClearance
+	end, function(v)
+		CONFIG.WallPaddingClearance = v
+	end, 0.5, 8.0, 1)
+
+	local refreshTeleBuf = makeSliderRow(scroll, "Telegraph buffer range", function()
+		return CONFIG.TelegraphBufferRange
+	end, function(v)
+		CONFIG.TelegraphBufferRange = v
+	end, 25, 220, 0)
+
+	local _, refreshHighTele = makeToggleButton(scroll, 24, greenOn, darkOff, function()
+		return CONFIG.HighlightTelegraphs
+	end, function()
+		return CONFIG.HighlightTelegraphs and "Highlight Telegraphs (Red): ON" or "Highlight Telegraphs (Red): OFF"
+	end, function()
+		CONFIG.HighlightTelegraphs = not CONFIG.HighlightTelegraphs
+		STATE.LastVisualConfigSig = ""
+	end)
+
+	local _, refreshPathNodes = makeToggleButton(scroll, 24, greenOn, darkOff, function()
+		return CONFIG.RenderPathNodes
+	end, function()
+		return CONFIG.RenderPathNodes and "Render path nodes: ON" or "Render path nodes: OFF"
+	end, function()
+		CONFIG.RenderPathNodes = not CONFIG.RenderPathNodes
+		if not CONFIG.RenderPathNodes then
+			renderPathVisuals(Vector3.zero, {}, 1)
+		end
+	end)
+
+	local _, refreshPlayerHitbox = makeToggleButton(scroll, 24, greenOn, darkOff, function()
+		return CONFIG.RenderPlayerHitbox
+	end, function()
+		return CONFIG.RenderPlayerHitbox and "Render Player Hitbox: ON" or "Render Player Hitbox: OFF"
+	end, function()
+		CONFIG.RenderPlayerHitbox = not CONFIG.RenderPlayerHitbox
+		STATE.LastVisualConfigSig = ""
+	end)
+
+	local _, refreshStreamer = makeToggleButton(scroll, 24, Color3.fromRGB(132, 76, 205), darkOff, function()
+		return CONFIG.StreamerMode
+	end, function()
+		return CONFIG.StreamerMode and "Streamer Mode Panel: ON" or "Streamer Mode Panel"
+	end, function()
+		CONFIG.StreamerMode = not CONFIG.StreamerMode
+		feedFrame.Visible = not CONFIG.StreamerMode
+		statusLbl.Visible = not CONFIG.StreamerMode
+	end)
+
+	local _, refreshPickTele = makeToggleButton(scroll, 24, Color3.fromRGB(195, 128, 36), darkOff, function()
+		return CONFIG.PickTelegraphs
+	end, function()
+		return CONFIG.PickTelegraphs and "Pick Telegraphs: ON" or "Pick Telegraphs: OFF"
+	end, function()
+		CONFIG.PickTelegraphs = not CONFIG.PickTelegraphs
+		STATE.LastVisualConfigSig = ""
+	end)
+
+	local _, refreshDebug = makeToggleButton(scroll, 24, Color3.fromRGB(58, 124, 215), Color3.fromRGB(48, 86, 155), function()
+		return CONFIG.DebugVerbose
+	end, function()
+		return CONFIG.DebugVerbose and "Debug: VERBOSE" or "Debug: NORMAL"
+	end, function()
+		CONFIG.DebugVerbose = not CONFIG.DebugVerbose
+	end)
+
+	local destructBtn = Instance.new("TextButton")
+	destructBtn.Size = UDim2.new(1, 0, 0, 24)
+	destructBtn.BackgroundColor3 = Color3.fromRGB(205, 58, 58)
+	destructBtn.BorderSizePixel = 0
+	destructBtn.Text = "Destruct"
+	destructBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	destructBtn.Font = Enum.Font.GothamBold
+	destructBtn.TextSize = 11
+	destructBtn.Parent = scroll
+	Instance.new("UICorner", destructBtn).CornerRadius = UDim.new(0, 5)
+
+	destructBtn.MouseButton1Click:Connect(function()
+		destroyScript()
+	end)
+
+	local footerLbl = Instance.new("TextLabel")
+	footerLbl.Size = UDim2.new(1, -20, 0, 16)
+	footerLbl.Position = UDim2.new(0, 10, 1, -20)
+	footerLbl.BackgroundTransparency = 1
+	footerLbl.Text = "v1.16.0 \"Smooth\" - build 2026-09-01"
+	footerLbl.TextColor3 = Color3.fromRGB(115, 122, 138)
+	footerLbl.Font = Enum.Font.Gotham
+	footerLbl.TextSize = 9
+	footerLbl.TextXAlignment = Enum.TextXAlignment.Left
+	footerLbl.Parent = panel
+
+	local function refreshAll()
+		if STATE.Destroyed then
+			return
+		end
+		refreshLoop()
+		refreshEQ()
+		refreshAttackRange()
+		refreshSafeDist()
+		refreshWallPad()
+		refreshTeleBuf()
+		refreshHighTele()
+		refreshPathNodes()
+		refreshPlayerHitbox()
+		refreshStreamer()
+		refreshPickTele()
+		refreshDebug()
+
+		statusLbl.Text = STATE.LoopEnabled and "Status: Running" or "Status: Idle"
+		statusLbl.TextColor3 = STATE.LoopEnabled and Color3.fromRGB(85, 225, 135) or Color3.fromRGB(175, 182, 198)
+
+		enemiesLine.Text = string.format("Enemies detected (Map): %d", STATE.MapEnemyCount)
+		targetLine.Text = string.format("Target: %s", STATE.CurrentTargetLabel)
+		hpLine.Text = string.format("HP: %s", STATE.CurrentTargetHpText)
+		teleLine.Text = string.format("Telegraphs Active: %d", #STATE.ActiveHazards)
+
+		if CONFIG.DebugVerbose then
+			moveLine.Text = string.format("Movement: %s wp %s | buf:%d", STATE.MovementModeLabel, STATE.WaypointProgressText, CONFIG.TelegraphBufferRange)
+		else
+			moveLine.Text = string.format("Movement: %s wp %s", STATE.MovementModeLabel, STATE.WaypointProgressText)
+		end
+
+		for i, rowLbl in ipairs(feedRows) do
+			local hb = STATE.ActiveHazards[i]
+			if hb then
+				rowLbl.Text = string.format("%s (%.1fs)", hb.name, hb.dist)
+				rowLbl.TextColor3 = Color3.fromRGB(255, 125, 125)
+			else
+				rowLbl.Text = "No active hazards detected"
+				rowLbl.TextColor3 = Color3.fromRGB(145, 150, 165)
+			end
+		end
+	end
+
+	refreshAllGui = refreshAll
+	refreshAll()
+end
+
+local guiOk, guiErr = pcall(createGui)
+if not guiOk then
+	warn("[DungeonAutofarm] GUI creation error: " .. tostring(guiErr))
+end
+
+-- ==========================================
+-- 6. EVERY-FRAME SPEED LOCK & COMBAT LOOP
+-- ==========================================
+renderConn = RunService.RenderStepped:Connect(function(dt: number)
+	if STATE.Destroyed then
+		return
+	end
+
+	local char, hum, root = getCharacterParts()
+	if not hum or not root then
+		resetCombatState(false)
+		clearVisuals()
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	if root.Position.Y <= CONFIG.ResetBelowY then
+		resetMovementState()
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	if STATE.LoopEnabled then
+		hum.WalkSpeed = CONFIG.SpeedValue
+	end
+
+	if not STATE.LoopEnabled then
+		STATE.MovementModeLabel = "IDLE"
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	local hazards = scanHazards(root.Position, char)
+	updateTelegraphVisuals(root.Position, hazards)
+
+	local roomEnemies = getRoomEnemies(root.Position, char)
+
+	-- Dodge hazards first while keeping active combat state intact
+	if dodgeHazards(root, hum, hazards, char) then
+		STATE.MovementModeLabel = "DODGE"
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	-- No living enemies in room -> advance to next room/portal
+	if #roomEnemies == 0 then
+		STATE.CurrentTarget = nil
+		STATE.CurrentTargetLabel = "None"
+		STATE.CurrentTargetHpText = "0 / 0"
+		STATE.AimPosition = nil
+		STATE.AimUntil = 0
+		resetGroupCycleState()
+
+		if CONFIG.AutoRoomAdvance then
+			local nextPos = findNextRoomOrObjective(root.Position)
+			if nextPos then
+				STATE.MovementModeLabel = "ADVANCE"
+				moveToGoal(root, hum, nextPos, char, hazards)
+				if refreshAllGui then
+					refreshAllGui()
+				end
+				return
+			end
+		end
+
+		STATE.MovementModeLabel = "IDLE"
+		resetMovementState()
+		hum:MoveTo(root.Position)
+		renderPathVisuals(root.Position, {}, 1)
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	-- Boss check: lock straight onto boss and circle/cast while dodging
+	local bossEntry: EnemyEntry? = nil
+	for _, entry in ipairs(roomEnemies) do
+		if entry.isBoss then
+			bossEntry = entry
+			break
+		end
+	end
+
+	if bossEntry then
+		STATE.CurrentTarget = bossEntry.model
+		STATE.CurrentTargetLabel = bossEntry.model.Name
+		if bossEntry.hum then
+			STATE.CurrentTargetHpText = string.format("%d / %d", math.max(0, math.round(bossEntry.hum.Health)), math.max(1, math.round(bossEntry.hum.MaxHealth)))
+		else
+			STATE.CurrentTargetHpText = "Active"
+		end
+
+		if STATE.AimPosition and os.clock() < STATE.AimUntil then
+			facePositionFlat(root, STATE.AimPosition)
+		end
+
+		local targetPos = bossEntry.part.Position
+		local flatCenter = Vector3.new(targetPos.X, root.Position.Y, targetPos.Z)
+		local dist = (Vector3.new(root.Position.X, root.Position.Y, root.Position.Z) - flatCenter).Magnitude
+		local maxCastDist = CONFIG.CastRangeStuds + CONFIG.CastLeewayStuds
+		local safeRepelDist = math.max(CONFIG.PersonalRepelRadius, CONFIG.EngageDistanceStuds - 3.0)
+		local desiredEngageDist = math.max(safeRepelDist + 2.0, CONFIG.EngageDistanceStuds)
+
+		if dist < safeRepelDist then
+			STATE.MovementModeLabel = "RETREAT"
+			local awayDir = (Vector3.new(root.Position.X, root.Position.Y, root.Position.Z) - flatCenter)
+			local dir = awayDir.Magnitude > 0.05 and awayDir.Unit or (-root.CFrame.LookVector)
+			moveToGoal(root, hum, root.Position + Vector3.new(dir.X, 0, dir.Z).Unit * 5.0, char, hazards)
+		elseif dist > desiredEngageDist + 2.5 then
+			STATE.MovementModeLabel = "PURSUE"
+			local toPlayer = Vector3.new(root.Position.X - flatCenter.X, 0, root.Position.Z - flatCenter.Z)
+			local dir = toPlayer.Magnitude > 0.05 and toPlayer.Unit or Vector3.new(0, 0, 1)
+			moveToGoal(root, hum, flatCenter + dir * desiredEngageDist, char, hazards)
+		else
+			STATE.MovementModeLabel = "CIRCLE"
+			STATE.OrbitAngle += dt * 1.8
+			local orbitPos = flatCenter + Vector3.new(math.cos(STATE.OrbitAngle) * desiredEngageDist, 0, math.sin(STATE.OrbitAngle) * desiredEngageDist)
+			moveToGoal(root, hum, orbitPos, char, hazards)
+		end
+
+		if bossEntry.dist <= maxCastDist then
+			lookAtAndCastAbilities(root, targetPos)
+		end
+
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	-- Non-boss room:
+	-- 1) Visit each distinct enemy group once to pull them together
+	-- 2) Wait at a safe spot while dodgeHazards handles telegraphs until bunched
+	-- 3) Once bunched in one group, continuously circle them while casting spells
+	local roomSig = tostring(#roomEnemies) .. "_" .. roomEnemies[1].model.Name
+	if STATE.RoomSignature ~= roomSig then
+		STATE.RoomSignature = roomSig
+		resetGroupCycleState()
+	end
+
+	local clusters = buildEnemyClusters(roomEnemies, CONFIG.GroupClusterRadius)
+	local bunched = areEnemiesBunched(roomEnemies, CONFIG.GroupClusterRadius)
+
+	-- Prune visited IDs that no longer exist
+	local liveIds: { [string]: boolean } = {}
+	for _, c in ipairs(clusters) do
+		liveIds[c.id] = true
+	end
+	for id in pairs(STATE.VisitedGroupIds) do
+		if not liveIds[id] then
+			STATE.VisitedGroupIds[id] = nil
+		end
+	end
+
+	-- Find next unvisited group if not yet bunched
+	local unvisitedCluster: EnemyCluster? = nil
+	if not bunched then
+		for _, c in ipairs(clusters) do
+			if not STATE.VisitedGroupIds[c.id] then
+				unvisitedCluster = c
+				break
+			end
+		end
+	end
+
+	local now = os.clock()
+	if unvisitedCluster then
+		if STATE.ActiveVisitGroupId ~= unvisitedCluster.id then
+			STATE.ActiveVisitGroupId = unvisitedCluster.id
+			STATE.ActiveVisitStart = now
+			STATE.LastGoalPos = nil
+			STATE.ActiveWaypoints = {}
+			STATE.LastPathCompute = 0
+		end
+
+		local targetEntry = unvisitedCluster.primary
+		STATE.CurrentTarget = targetEntry.model
+		STATE.CurrentTargetLabel = targetEntry.model.Name
+		if targetEntry.hum then
+			STATE.CurrentTargetHpText = string.format("%d / %d", math.max(0, math.round(targetEntry.hum.Health)), math.max(1, math.round(targetEntry.hum.MaxHealth)))
+		else
+			STATE.CurrentTargetHpText = "Active"
+		end
+
+		local grpCenter = Vector3.new(unvisitedCluster.center.X, root.Position.Y, unvisitedCluster.center.Z)
+		local distToGroup = (Vector3.new(root.Position.X, root.Position.Y, root.Position.Z) - grpCenter).Magnitude
+		local visitRadius = math.max(CONFIG.PersonalRepelRadius + 2.0, CONFIG.EngageDistanceStuds)
+
+		if distToGroup <= visitRadius + 2.5 or (now - STATE.ActiveVisitStart) >= CONFIG.GroupVisitTimeout then
+			STATE.VisitedGroupIds[unvisitedCluster.id] = true
+			STATE.ActiveVisitGroupId = nil
+			STATE.HoldSpotPos = findSafePointNear(root.Position, root.Position, hazards, char)
+			STATE.MovementModeLabel = "WAIT"
+		else
+			STATE.MovementModeLabel = "GATHER"
+			local toPlayer = Vector3.new(root.Position.X - grpCenter.X, 0, root.Position.Z - grpCenter.Z)
+			local radialDir = toPlayer.Magnitude > 0.05 and toPlayer.Unit or Vector3.new(0, 0, 1)
+			moveToGoal(root, hum, grpCenter + radialDir * visitRadius, char, hazards)
+		end
+
+		if STATE.AimPosition and os.clock() < STATE.AimUntil then
+			facePositionFlat(root, STATE.AimPosition)
+		end
+
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	-- All groups visited once (or only 1 group exists), but enemies haven't bunched up yet -> wait safely while dodging hazards
+	if not bunched then
+		if not STATE.HoldSpotPos or isPointInHazard(STATE.HoldSpotPos, hazards, 0.5) then
+			STATE.HoldSpotPos = findSafePointNear(root.Position, root.Position, hazards, char)
+		end
+
+		local primary = roomEnemies[1]
+		STATE.CurrentTarget = primary.model
+		STATE.CurrentTargetLabel = primary.model.Name
+		if primary.hum then
+			STATE.CurrentTargetHpText = string.format("%d / %d", math.max(0, math.round(primary.hum.Health)), math.max(1, math.round(primary.hum.MaxHealth)))
+		else
+			STATE.CurrentTargetHpText = "Active"
+		end
+
+		local holdDist = (Vector3.new(root.Position.X, root.Position.Y, root.Position.Z) - Vector3.new(STATE.HoldSpotPos.X, root.Position.Y, STATE.HoldSpotPos.Z)).Magnitude
+		if holdDist > 2.5 then
+			STATE.MovementModeLabel = "WAIT"
+			moveToGoal(root, hum, STATE.HoldSpotPos, char, hazards)
+		else
+			STATE.MovementModeLabel = "HOLD"
+			hum:MoveTo(root.Position)
+			renderPathVisuals(root.Position, {}, 1)
+		end
+
+		if STATE.AimPosition and os.clock() < STATE.AimUntil then
+			facePositionFlat(root, STATE.AimPosition)
+		end
+
+		if refreshAllGui then
+			refreshAllGui()
+		end
+		return
+	end
+
+	-- Enemies are bunched in one group -> continuously circle them while casting Q & E
+	STATE.HoldSpotPos = nil
+	local packCenter = computePackCentroid(roomEnemies, root.Position.Y)
+	local primary = roomEnemies[1]
+
+	STATE.CurrentTarget = primary.model
+	STATE.CurrentTargetLabel = primary.model.Name
+	if primary.hum then
+		STATE.CurrentTargetHpText = string.format("%d / %d", math.max(0, math.round(primary.hum.Health)), math.max(1, math.round(primary.hum.MaxHealth)))
+	else
+		STATE.CurrentTargetHpText = "Active"
+	end
+
+	if STATE.AimPosition and os.clock() < STATE.AimUntil then
+		facePositionFlat(root, STATE.AimPosition)
+	end
+
+	local flatPlayer = Vector3.new(root.Position.X, root.Position.Y, root.Position.Z)
+	local distToPack = (flatPlayer - packCenter).Magnitude
+	local maxCastDist = CONFIG.CastRangeStuds + CONFIG.CastLeewayStuds
+	local safeRepelDist = math.max(CONFIG.PersonalRepelRadius, CONFIG.EngageDistanceStuds - 3.0)
+	local circleRadius = math.clamp(CONFIG.EngageDistanceStuds, safeRepelDist + 1.5, math.max(safeRepelDist + 2.0, maxCastDist - 2.0))
+
+	if distToPack < safeRepelDist then
+		STATE.MovementModeLabel = "RETREAT"
+		local away = flatPlayer - packCenter
+		local dir = away.Magnitude > 0.05 and away.Unit or (-root.CFrame.LookVector)
+		moveToGoal(root, hum, flatPlayer + Vector3.new(dir.X, 0, dir.Z).Unit * 5.0, char, hazards)
+	else
+		STATE.MovementModeLabel = "CIRCLE"
+		STATE.OrbitAngle += dt * 1.9
+		local circleGoal = packCenter + Vector3.new(math.cos(STATE.OrbitAngle) * circleRadius, 0, math.sin(STATE.OrbitAngle) * circleRadius)
+		moveToGoal(root, hum, circleGoal, char, hazards)
+	end
+
+	if primary.dist <= maxCastDist then
+		lookAtAndCastAbilities(root, packCenter)
+	end
+
+	if refreshAllGui then
+		refreshAllGui()
+	end
+end)
